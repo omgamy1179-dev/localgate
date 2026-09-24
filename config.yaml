@@ -1,0 +1,63 @@
+# LocalGate configuration (shipped default)
+#
+# Privacy defaults:
+#   - paths.whitelist is EMPTY: nothing is ever indexed until you add your own
+#     directories. Example (do not copy blindly):
+#       paths:
+#         whitelist:
+#           - /home/me/Notes          # a directory YOU own
+#           - ~/Documents/vault       # '~' expands to your home directory
+#   - Relative paths below resolve against the directory containing this file.
+#   - The gateway binds to loopback only and never sends data off this machine.
+
+server:
+  host: 127.0.0.1        # loopback only (127.0.0.1 / ::1 / localhost)
+  port: 8770
+  read_timeout_s: 30     # per-connection read budget: idle keep-alive and
+                         # stalled request bodies are cut off instead of
+                         # pinning handler threads forever
+
+index:
+  data_dir: ./data       # index storage (local only)
+  max_file_mb: 20
+  chunk_size: 500
+  chunk_overlap: 80
+
+paths:
+  whitelist: []          # REQUIRED to index anything; add your own dirs here
+  blacklist: []          # overrides whitelist, e.g. ["/home/me/Notes/private"]
+  exclude_names: [".git", "node_modules", "__pycache__", ".DS_Store", ".venv", "venv"]
+
+embedding:
+  backend: local         # local (built-in, offline) | ollama (loopback only)
+  ollama_url: http://127.0.0.1:11434   # MUST resolve to loopback; remote hosts are rejected
+  model: nomic-embed-text
+  dim: 512               # dimension for the local backend
+  timeout_s: 20
+
+ocr:
+  mode: auto             # auto: tesseract -> macOS Vision (compiled locally) -> skip
+  languages: ["zh-Hans", "en-US"]
+  timeout_s: 60
+
+search:
+  fulltext_weight: 0.55
+  vector_weight: 0.45
+  top_k: 8
+
+watcher:
+  enabled: true
+  interval_s: 10         # incremental rescan cadence
+
+selfcheck:
+  enabled: true
+  interval_s: 300        # self-check round cadence
+  item_delay_ms: 50      # pacing between check items (low-CPU priority behaviour)
+  consecutive_error_threshold: 3
+  backoff_max_s: 1800
+  index_size_warn_mb: 2048
+
+logs:
+  dir: ./logs
+  max_mb: 10
+  backups: 5

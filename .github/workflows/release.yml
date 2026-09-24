@@ -1,0 +1,73 @@
+name: Release
+
+# Builds release artifacts (wheel, sdist, SBOM, SHA-256 sums) and attaches
+# them to a GitHub Release with auto-generated notes. Publishing to PyPI uses
+# OIDC Trusted Publishing and is DOUBLE-GATED: it only runs when an
+# administrator explicitly dispatches this workflow with publish_pypi=true
+# AND the protected `pypi` environment passes. It never runs on tag push.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Also publish to PyPI via Trusted Publishing (requires the protected `pypi` environment)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-release:
+    name: build & attach release artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create/update the GitHub Release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13"
+      - name: Install build tooling
+        run: python -m pip install build twine
+      - name: Build sdist and wheel
+        run: python -m build
+      - name: Twine metadata check
+        run: python -m twine check dist/*
+      - name: Generate SBOM and SHA-256 checksums
+        run: python tools/generate_sbom.py dist
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --title "LocalGate $TAG" --generate-notes \
+            --draft=false 2>/dev/null || true
+          gh release upload "$TAG" dist/* --clobber
+      - name: Upload artifacts to the workflow run as well
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-dist
+          path: dist/
+
+  publish-pypi:
+    name: publish to PyPI (Trusted Publishing)
+    needs: build-release
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_pypi == true
+    runs-on: ubuntu-latest
+    # requires the repository to define a protected `pypi` environment and a
+    # Trusted Publisher for this workflow on pypi.org; no long-lived token
+    environment: pypi
+    permissions: {} # OIDC only; id-token granted implicitly by the publisher
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-dist
+          path: dist
+      - name: Publish via OIDC
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1

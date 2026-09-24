@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "ci"]
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels: ["dependencies", "python"]
+    # LocalGate's runtime core has no third-party dependencies; this watches
+    # the optional extras and dev tooling declared in pyproject.toml
+    allow:
+      - dependency-type: "all"

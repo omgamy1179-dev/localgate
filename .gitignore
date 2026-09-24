@@ -1,0 +1,27 @@
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.smoke-venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# --- LocalGate runtime state (never publish your local index/logs) ---
+data/
+logs/
+*.log
+
+# --- macOS / editor noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

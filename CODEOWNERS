@@ -1,0 +1,11 @@
+# CODEOWNERS — default reviewers for pull requests.
+#
+# The GitHub account below is the repository owner's account. If the project
+# moves to an organization or additional maintainers join, update this file
+# so reviews are distributed.
+#
+# NOTE (repository administrator pre-release checklist):
+#   - verify this account is the intended maintainer;
+#   - enable branch protection / rulesets so this file actually gates merges.
+
+* @omgamy1179-dev
