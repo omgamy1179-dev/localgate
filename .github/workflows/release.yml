@@ -45,8 +45,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" --title "LocalGate $TAG" --generate-notes \
-            --draft=false 2>/dev/null || true
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "LocalGate $TAG" --generate-notes
           gh release upload "$TAG" dist/* --clobber
       - name: Upload artifacts to the workflow run as well
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -62,7 +62,8 @@ jobs:
     # requires the repository to define a protected `pypi` environment and a
     # Trusted Publisher for this workflow on pypi.org; no long-lived token
     environment: pypi
-    permissions: {} # OIDC only; id-token granted implicitly by the publisher
+    permissions:
+      id-token: write # OIDC trusted publishing; no password token involved
     steps:
       - name: Download release artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

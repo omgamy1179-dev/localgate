@@ -600,6 +600,9 @@ def s17(ctx):
 
 @scenario("S18 调试面板：文件名中的 HTML 一律转义（防注入）")
 def s18(ctx):
+    if sys.platform == "win32":
+        print("    SKIP ('<'/'>' are illegal in Windows filenames)")
+        return
     base = ctx.svc.base
     evil = os.path.join(ctx.vault, "notes", "<script>alert(1).md")
     try:
