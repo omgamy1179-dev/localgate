@@ -117,9 +117,10 @@ class Service:
         with open(self.cfg_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, allow_unicode=True)
 
-    def start(self, timeout: float = 30) -> None:
+    def start(self, timeout: float = 120) -> None:
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONUTF8"] = "1"   # scenario output has non-ASCII names
         self.proc = subprocess.Popen(
             [sys.executable, os.path.join(ROOT, "main.py"), "serve",
              "--config", self.cfg_path],
@@ -386,6 +387,7 @@ def s7(ctx):
 def s8(ctx):
     env = dict(os.environ)
     env["LOCALGATE_API"] = ctx.svc.base
+    env["PYTHONUTF8"] = "1"
     proc = subprocess.Popen(
         [sys.executable, os.path.join(ROOT, "main.py"), "mcp",
          "--config", ctx.svc.cfg_path],
@@ -455,6 +457,7 @@ def s8(ctx):
 def s9(ctx):
     env = dict(os.environ)
     env["LOCALGATE_API"] = "http://127.0.0.1:59999"
+    env["PYTHONUTF8"] = "1"
     proc = subprocess.Popen(
         [sys.executable, os.path.join(ROOT, "main.py"), "mcp", "--api", env["LOCALGATE_API"]],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -661,7 +664,9 @@ def s19(ctx):
                desc="doc count settled after churn")
     st = ctx.status()
     statuses = st["index"]["docs_by_status"]
-    check(all(s in ("ok", "ocr_empty") for s in statuses) and
+    # ocr_unavailable is a legitimate settled state on hosts without any
+    # local OCR engine (e.g. Windows runners)
+    check(all(s in ("ok", "ocr_empty", "ocr_unavailable") for s in statuses) and
           sum(statuses.values()) == 8,
           f"docs not settled/healthy after churn: {statuses}")
     check(st["index"]["load_errors"] == 0, "index load errors after churn")
@@ -742,6 +747,8 @@ def _run_in(workdir: str) -> int:
                    "model": "nope", "timeout_s": 3})
     ctx.svc_empty = Service("empty", workdir, vault, free_port(), whitelist=[])
     try:
+        # start one at a time: on cold CI runners python startup and the
+        # OCR helper compile are expensive and must not race each other
         ctx.svc.start()
         ctx.svc_degraded.start()
         ctx.svc_empty.start()

@@ -62,7 +62,9 @@ class RescanTestCase(unittest.TestCase):
         state = svc.request_rescan()
         self.assertTrue(state["rescan_started"], state)
         self.assertEqual(state["mode"], "oneshot")
-        wait_until(lambda: len(svc.store.docs) == 1, timeout=30)
+        # last_pass is assigned by the scan thread after the scan finishes
+        wait_until(lambda: svc.watcher.last_pass is not None
+                   and len(svc.store.docs) == 1, timeout=30)
         self.assertEqual(svc.watcher.last_pass.get("ingested"), 1)
 
     def test_rescan_empty_whitelist_reports_refusal(self):
