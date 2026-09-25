@@ -46,7 +46,7 @@ classifiers = [
 yaml = ["pyyaml>=6"]
 pdf = ["pypdf>=6.19.0"]
 dev = [
-  "pytest>=8",
+  "pytest>=9.1.1",
   "pytest-cov>=7.1.0",
   "coverage>=7",
   "ruff>=0.5",
