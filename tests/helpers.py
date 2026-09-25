@@ -42,6 +42,8 @@ def make_cfg(workdir: str, port: int | None = None, **overrides) -> dict:
         "server": {"port": port or free_port(), "read_timeout_s": 3},
         "index": {"data_dir": os.path.join(workdir, "data")},
         "paths": {"whitelist": [], "blacklist": []},
+        "ocr": {"mode": "off"},  # unit tests never exercise OCR; avoids
+                                 # compiling the Vision helper on CI runners
         "watcher": {"enabled": False, "interval_s": 1},
         "selfcheck": {"enabled": False, "interval_s": 60, "item_delay_ms": 0},
         "logs": {"dir": os.path.join(workdir, "logs")},

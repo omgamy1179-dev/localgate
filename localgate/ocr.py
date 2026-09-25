@@ -170,11 +170,16 @@ class OcrEngine:
         self-check loop, so the first probe is asynchronous."""
         if self.mode == "off":
             return None
-        with self._helper_lock:
-            if self._tesseract_bin():
-                return "tesseract"
-            if self._vision_broken or self._helper_path:
-                return "vision" if self._helper_path else None
+        # plain attribute reads: the background probe holds _helper_lock for
+        # the whole (potentially minutes-long) helper compilation, so this
+        # path must never contend with it. A slightly stale read is fine -
+        # the probe updates the flags when it finishes.
+        if self._tesseract_bin():
+            return "tesseract"
+        if self._vision_broken:
+            return None
+        if self._helper_path:
+            return "vision"
         self._start_background_probe()
         return None
 
