@@ -118,24 +118,58 @@ class Service:
             yaml.safe_dump(cfg, f, allow_unicode=True)
 
     def start(self, timeout: float = 120) -> None:
+        """Start the service, retrying on port collisions.
+
+        free_port() hands out a port that is closed again immediately; on
+        loaded machines (especially Windows) an unrelated ephemeral bind can
+        steal it before the child service binds, making the child die with
+        'address already in use'. Detect that in the service log and retry
+        with a fresh port."""
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONUTF8"] = "1"   # scenario output has non-ASCII names
-        self.proc = subprocess.Popen(
-            [sys.executable, os.path.join(ROOT, "main.py"), "serve",
-             "--config", self.cfg_path],
-            stdout=open(self.log_path, "ab"), stderr=subprocess.STDOUT, env=env,
-            cwd=ROOT)
-        try:
-            wait_until(lambda: http_json("GET", self.base + "/health")[0] == 200,
-                       timeout, desc=f"{self.name} /health")
-        except AssertionError:
+        bind_markers = ("address already in use", "address already in",
+                        "winerror 10048", "errno 48", "errno 98",
+                        "only one usage of each socket address")
+        for attempt in range(3):
+            self.port = free_port()
+            self.base = f"http://127.0.0.1:{self.port}"
+            import yaml as _yaml
+            with open(self.cfg_path, encoding="utf-8") as f:
+                cfg_doc = _yaml.safe_load(f)
+            cfg_doc["server"]["port"] = self.port
+            with open(self.cfg_path, "w", encoding="utf-8") as f:
+                _yaml.safe_dump(cfg_doc, f, allow_unicode=True)
             try:
-                with open(self.log_path, encoding="utf-8", errors="replace") as f:
-                    print(f"    [{self.name} service log]\n{f.read()[-2000:]}")
+                os.remove(self.log_path)
             except OSError:
                 pass
-            raise
+            self.proc = subprocess.Popen(
+                [sys.executable, os.path.join(ROOT, "main.py"), "serve",
+                 "--config", self.cfg_path],
+                stdout=open(self.log_path, "ab"), stderr=subprocess.STDOUT,
+                env=env, cwd=ROOT)
+            try:
+                wait_until(
+                    lambda: http_json("GET", self.base + "/health")[0] == 200,
+                    timeout, desc=f"{self.name} /health")
+                return
+            except AssertionError:
+                try:
+                    with open(self.log_path, encoding="utf-8",
+                              errors="replace") as f:
+                        log = f.read()
+                except OSError:
+                    log = ""
+                if self.proc.poll() is not None and \
+                        any(m in log.lower() for m in bind_markers) \
+                        and attempt < 2:
+                    print(f"    [{self.name}] port {self.port} collided "
+                          f"({attempt + 1}/3), retrying with a new port")
+                    continue
+                print(f"    [{self.name} service log]\n{log[-2000:]}")
+                raise
+        raise AssertionError(f"{self.name}: failed to start after 3 attempts")
 
     def stop(self) -> None:
         if self.proc and self.proc.poll() is None:
