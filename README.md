@@ -1,15 +1,11 @@
 # LocalGate
 
-<!-- 徽章说明:仓库公开发布后,取消注释即可启用。仓库所有者确认最终的
-     owner/repo 路径后这些徽章才是真实有效的,发布前请勿保留指向不存在
-     仓库的徽章。
 [![CI](https://github.com/omgamy1179-dev/localgate/actions/workflows/ci.yml/badge.svg)](https://github.com/omgamy1179-dev/localgate/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/omgamy1179-dev/localgate/actions/workflows/codeql.yml/badge.svg)](https://github.com/omgamy1179-dev/localgate/actions/workflows/codeql.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/omgamy1179-dev/localgate)](https://github.com/omgamy1179-dev/localgate/releases)
-[![Security policy](https://img.shields.io/badge/security- policy-purple)](SECURITY.md)
--->
+[![Security policy](https://img.shields.io/badge/security-policy-purple)](SECURITY.md)
 
 **LocalGate** 是一个隐私优先的**本地检索网关**:把你自己电脑上分散的笔记、PDF、
 DOCX、源码、聊天记录导出和图片(本地 OCR)统一建立**本机索引**,通过
