@@ -3,12 +3,14 @@ stop persistence, scan-in-progress guard."""
 
 from __future__ import annotations
 
+import json
 import os
+import sys
 import tempfile
 import time
 import unittest
 
-from tests.helpers import build_service
+from tests.helpers import build_service, make_cfg
 from tests.make_samples import write_text
 
 
@@ -154,3 +156,85 @@ class StopLifecycleCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SignalShutdownCase(unittest.TestCase):
+    """A real service process must shut down cleanly on SIGINT/SIGTERM and
+    persist everything ingested so far (POSIX only; Windows kills differ)."""
+
+    def setUp(self) -> None:
+        self._td = tempfile.TemporaryDirectory()
+        self.addCleanup(self._td.cleanup)
+        self.td = self._td.name
+
+    def _write_service_cfg(self, td: str, vault: str) -> tuple[str, int]:
+        from tests.helpers import free_port, write_config
+        port = free_port()
+        cfg = make_cfg(td, port=port,
+                       paths={"whitelist": [vault]},
+                       watcher={"enabled": True, "interval_s": 2},
+                       selfcheck={"enabled": False})
+        cfg["index"]["data_dir"] = os.path.join(td, "data")
+        cfg["logs"]["dir"] = os.path.join(td, "logs")
+        cfg_path = os.path.join(td, "config.yaml")
+        write_config(cfg_path, cfg)
+        return cfg_path, port
+
+    @unittest.skipIf(os.name == "nt", "POSIX signal semantics")
+    def test_sigint_graceful_stop_persists_state(self):
+        import signal as signal_mod
+        import subprocess as subprocess_mod
+        import urllib.request
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        vault = os.path.join(self.td, "vault")
+        os.makedirs(vault)
+        write_text(os.path.join(vault, "sig.md"), "signal shutdown content marker")
+        cfg_path, port = self._write_service_cfg(self.td, vault)
+        env = dict(os.environ, PYTHONUNBUFFERED="1")
+        proc = subprocess_mod.Popen(
+            [sys.executable, "-m", "localgate.cli", "serve", "--config", cfg_path],
+            cwd=root, env=env, stdout=subprocess_mod.DEVNULL, stderr=subprocess_mod.DEVNULL)
+        try:
+            base = f"http://127.0.0.1:{port}"
+
+            def healthy():
+                try:
+                    with urllib.request.build_opener(
+                            urllib.request.ProxyHandler({})).open(
+                                base + "/health", timeout=2) as resp:
+                        return resp.status == 200
+                except OSError:
+                    return False
+
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and not healthy():
+                time.sleep(0.2)
+            self.assertTrue(healthy(), "service did not come up")
+
+            def indexed():
+                try:
+                    with urllib.request.build_opener(
+                            urllib.request.ProxyHandler({})).open(
+                                base + "/api/status", timeout=2) as resp:
+                        return json.loads(resp.read())["index"]["docs"] == 1
+                except (OSError, ValueError):
+                    return False
+
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and not indexed():
+                time.sleep(0.2)
+            self.assertTrue(indexed(), "vault doc not indexed")
+
+            proc.send_signal(signal_mod.SIGINT)
+            self.assertEqual(proc.wait(timeout=20), 0, "unclean exit on SIGINT")
+
+            # everything ingested before the signal survives a restart
+            svc2_resumed = build_service(self.td,
+                                         paths={"whitelist": [vault]},
+                                         watcher={"enabled": False})
+            self.assertEqual(len(svc2_resumed.store.docs), 1)
+            svc2_resumed.stop()
+        finally:
+            if proc.poll() is None:
+                proc.kill()

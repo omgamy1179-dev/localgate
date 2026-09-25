@@ -19,6 +19,37 @@ from .ocr import OcrUnavailable
 # recognized OCR text kept per image (bounds memory before chunking)
 MAX_OCR_TEXT_CHARS = 256 * 1024
 
+# wall-clock budget per file for text extraction. Size caps already bound the
+# work; this deadline guarantees a pathological parse cannot wedge the scan.
+# On timeout the file is recorded as a parse error and the pipeline moves on;
+# the (daemon) worker thread finishes in the background, bounded by the same
+# size caps, and ingests stay sequential so at most one thread lingers.
+EXTRACT_DEADLINE_S = 30
+
+
+def _extract_with_deadline(path: str, kind: str,
+                           deadline_s: float | None = None) -> tuple[str, str, dict]:
+    """Run extraction with a hard wall-clock deadline (fail closed to error)."""
+    if deadline_s is None:
+        deadline_s = EXTRACT_DEADLINE_S
+    outcome: dict = {}
+
+    def _target() -> None:
+        try:
+            outcome["value"] = extract_mod.extract(path, kind)
+        except BaseException as e:  # noqa: BLE001 - re-raised in caller thread
+            outcome["error"] = e
+
+    worker = threading.Thread(target=_target, name="localgate-extract", daemon=True)
+    worker.start()
+    worker.join(deadline_s)
+    if worker.is_alive():
+        raise extract_mod.ExtractError(
+            f"extraction exceeded {deadline_s}s processing deadline")
+    if "error" in outcome:
+        raise outcome["error"]
+    return outcome["value"]
+
 
 class IngestProgress:
     """Thread-safe progress snapshot for the status API."""
@@ -127,7 +158,7 @@ class Ingestor:
                 return meta
         else:
             try:
-                text, kind, extra = extract_mod.extract(path, kind)
+                text, kind, extra = _extract_with_deadline(path, kind)
                 meta["kind"] = kind
                 if extra:
                     meta["extract"] = {k: v for k, v in extra.items()}

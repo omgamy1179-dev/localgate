@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
@@ -25,6 +26,7 @@ from localgate.extract import (
     extract_chat_json,
     extract_docx,
     extract_pdf,
+    format_chat_export,
     read_file_bytes,
 )
 from localgate.ingest import Ingestor, IngestProgress, confirmed_gone, doc_id_for
@@ -143,6 +145,35 @@ class TestIngestPipeline(TempCase):
         snap = prog.snapshot()
         self.assertEqual(snap["errors"], 1)
         self.assertTrue(any("boom" in e for e in snap["recent_errors"]))
+
+    def test_extraction_deadline_fails_file_without_killing_scan(self):
+        """A file whose parser wedges hits the wall-clock deadline: the file is
+        recorded as a parse error and the scan continues with other files."""
+        import time as _time
+
+        from localgate import ingest as ingest_mod
+
+        vault = os.path.join(self.td, "vault")
+        os.makedirs(vault)
+        write_text(os.path.join(vault, "wedged.md"), "this parse never finishes")
+        write_text(os.path.join(vault, "healthy.md"), "healthy after wedge text")
+
+        def wedged_extract(path, kind=None):
+            if "wedged" in path:
+                _time.sleep(5)
+            return "slow text", "text", {}
+
+        ing, store = self._ingestor([vault])
+        with mock.patch.object(ingest_mod, "EXTRACT_DEADLINE_S", 0.2), \
+                mock.patch.object(ingest_mod.extract_mod, "extract",
+                                  side_effect=wedged_extract):
+            summary = ing.scan_whitelist(reason="deadline")
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(summary["ingested"], 1)
+        wedged_doc = next(d for d in store.docs.values()
+                          if "wedged" in d.get("path", ""))
+        self.assertEqual(wedged_doc["status"], "parse_error")
+        self.assertIn("deadline", wedged_doc.get("error", ""))
 
 
 # ------------------------------------------------------------------ ocr
@@ -412,3 +443,119 @@ class TestExtractFallbacks(TempCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestExtractDeepPaths(TempCase):
+    def test_flate_multichunk_roundtrip(self):
+        from localgate.extract import _try_flate
+        payload = b"catalog text " * 40000  # > cap-ish size, forces loop chunks
+        raw = __import__("zlib").compress(payload)
+        parts = _try_flate(raw)
+        self.assertGreater(len(parts), 0)
+        self.assertEqual(b"".join(parts), payload)
+
+    def test_flate_garbage_returns_empty(self):
+        from localgate.extract import _try_flate
+        self.assertEqual(_try_flate(b"\x00not flate at all"), [])
+
+    def test_minimal_pdf_with_flate_stream(self):
+        import zlib
+
+        from localgate.extract import _extract_pdf_minimal
+        stream = b"BT /F1 12 Tf (compressed flate text) Tj ET"
+        comp = zlib.compress(stream)
+        pdf = (b"%PDF-1.4\n1 0 obj\n<< /Length " + str(len(comp)).encode()
+               + b" /Filter /FlateDecode >>\nstream\n" + comp
+               + b"\nendstream\nendobj\n%%EOF\n")
+        p = os.path.join(self.td, "flate.pdf")
+        with open(p, "wb") as f:
+            f.write(pdf)
+        self.assertIn("compressed flate text", _extract_pdf_minimal(p))
+
+    def test_minimal_pdf_plain_text_without_streams(self):
+        from localgate.extract import _extract_pdf_minimal
+        p = os.path.join(self.td, "plain.pdf")
+        with open(p, "wb") as f:
+            f.write(b"not a real pdf but has (plain text) Tj ops inside")
+        self.assertIn("plain text", _extract_pdf_minimal(p))
+
+    def test_minimal_pdf_no_text_raises(self):
+        from localgate.extract import _extract_pdf_minimal
+        p = os.path.join(self.td, "empty.pdf")
+        with open(p, "wb") as f:
+            f.write(b"\x00\x01binary junk nothing here")
+        with self.assertRaises(ExtractError):
+            _extract_pdf_minimal(p)
+
+    def test_oversized_stream_skipped_next_stream_kept(self):
+        import zlib
+
+        from localgate.extract import MAX_PDF_DECOMPRESSED, _extract_pdf_minimal
+        good = zlib.compress(b"BT (tiny winner) Tj ET")
+        bomb = b"(" + b"x" * (MAX_PDF_DECOMPRESSED + 1024) + b") Tj"
+        pdf = (b"%PDF-1.4\n"
+               b"1 0 obj\n<< /Length " + str(len(bomb)).encode()
+               + b" >>\nstream\n" + bomb + b"\nendstream\nendobj\n"
+               b"2 0 obj\n<< /Length " + str(len(good)).encode()
+               + b" /Filter /FlateDecode >>\nstream\n" + good
+               + b"\nendstream\nendobj\n%%EOF\n")
+        p = os.path.join(self.td, "mixed.pdf")
+        with open(p, "wb") as f:
+            f.write(pdf)
+        self.assertIn("tiny winner", _extract_pdf_minimal(p))
+
+    def test_chat_export_skips_non_text_members(self):
+        msgs = [{"sender": "a", "text": "keep me"},
+                "not a dict",
+                {"sender": "b", "text": ""},
+                {"sender": "c", "text": "keep me too"}]
+        out = format_chat_export(msgs)
+        self.assertIn("keep me too", out)
+        self.assertNotIn("not a dict", out)
+
+    def test_pdf_pypdf_page_error_and_budget(self):
+        from localgate import extract as em
+
+        class FakePage:
+            def __init__(self, text):
+                self._t = text
+
+            def extract_text(self):
+                if self._t == "boom":
+                    raise RuntimeError("page parse exploded")
+                return self._t
+
+        class FakeReader:
+            def __init__(self):
+                self.pages = [FakePage("first page"), FakePage("boom"),
+                              FakePage("z" * (em.MAX_EXTRACTED_CHARS + 10))]
+
+        fake_pypdf = types.SimpleNamespace(PdfReader=lambda path: FakeReader())
+        with mock.patch.dict(sys.modules, {"pypdf": fake_pypdf}):
+            text = em._extract_pdf_pypdf("whatever.pdf")
+        self.assertIn("first page", text)
+        self.assertLessEqual(len(text), em.MAX_EXTRACTED_CHARS + 10)
+
+    def test_pdf_pypdf_too_many_pages(self):
+        from localgate import extract as em
+
+        class FakeReader:
+            pages = []
+
+        reader = FakeReader()
+        reader.pages = range(em.MAX_PDF_PAGES + 5)  # len() works on range
+        fake_pypdf = types.SimpleNamespace(PdfReader=lambda path: reader)
+        with mock.patch.dict(sys.modules, {"pypdf": fake_pypdf}):
+            with self.assertRaises(ExtractError):
+                em._extract_pdf_pypdf("huge.pdf")
+
+    def test_pdf_pypdf_generic_failure(self):
+        import localgate.extract as em
+        junk = os.path.join(self.td, "junk.pdf")
+        with open(junk, "wb") as f:
+            f.write(b"no text operations anywhere in here")
+        with mock.patch.dict(sys.modules, {"pypdf": None}):
+            # pypdf missing -> ImportError branch; minimal fallback then finds
+            # no text in the junk bytes -> ExtractError
+            with self.assertRaises(ExtractError):
+                em.extract_pdf(junk)

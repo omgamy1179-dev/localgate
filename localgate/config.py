@@ -94,12 +94,30 @@ def _coerce_scalar(text: str) -> Any:
         return float(t)
     except ValueError:
         pass
-    # inline list ["a", "b"]
+    # inline list ["a", "b"] - commas inside quotes do not split
     if t.startswith("[") and t.endswith("]"):
         inner = t[1:-1].strip()
         if not inner:
             return []
-        parts = [p.strip() for p in inner.split(",")]
+        parts: list[str] = []
+        buf: list[str] = []
+        quote: str | None = None
+        for ch in inner:
+            if quote:
+                buf.append(ch)
+                if ch == quote:
+                    quote = None
+            elif ch in "\"'":
+                quote = ch
+                buf.append(ch)
+            elif ch == ",":
+                parts.append("".join(buf).strip())
+                buf = []
+            else:
+                buf.append(ch)
+        tail = "".join(buf).strip()
+        if tail:
+            parts.append(tail)
         return [_coerce_scalar(p) for p in parts if p]
     return t
 

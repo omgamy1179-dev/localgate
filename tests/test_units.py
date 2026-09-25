@@ -13,6 +13,7 @@ import json
 import math
 import os
 import socket
+import sys
 import tempfile
 import time
 import unittest
@@ -1025,3 +1026,215 @@ class TestServiceSnapshot(TempCase):
         self.addCleanup(svc.stop)
         th.Timer(0.5, svc.stop).start()
         svc.wait_forever()  # must return, not hang
+
+
+class TestSelfcheckErrorBranches(TempCase):
+    def test_all_items_failing_still_writes_log_and_backs_off(self):
+        import threading as th
+
+        from localgate.ingest import IngestProgress
+        from localgate.ocr import OcrEngine
+        from localgate.selfcheck import SelfCheckDaemon
+
+        st = IndexStore(os.path.join(self.td, "data"))
+        prog = IngestProgress()
+
+        class _FakeWatcher:
+            error_count = 0
+
+        class _FakeIngestor:
+            progress = prog
+            store = st
+
+            def retry_failed_docs(self, only_doc_ids=None):
+                raise RuntimeError("repair exploded")
+
+        class _BoomEmbedder:
+            def health(self):
+                raise RuntimeError("embedder exploded")
+
+        # a broken doc (chunk_count set, no vector) forces the integrity item
+        # to call retry_failed_docs, which explodes -> error branch. Its file
+        # must exist so the file_sources item does not drop it first.
+        write_text(os.path.join(self.td, "b.md"), "x")
+        st.upsert_doc("broken", {"path": os.path.join(self.td, "b.md"),
+                                 "status": "ok", "chunk_count": 1}, ["t"], None)
+        st.docs["broken"]["chunk_count"] = 2  # count mismatch -> broken_docs
+
+        cfg = make_cfg(self.td)
+        cfg["selfcheck"].update({"interval_s": 2, "item_delay_ms": 1,
+                                 "consecutive_error_threshold": 1,
+                                 "backoff_max_s": 8})
+        d = SelfCheckDaemon(cfg, st, _FakeIngestor(), _BoomEmbedder(),
+                            OcrEngine(mode="off"), _FakeWatcher(),
+                            f"http://127.0.0.1:{free_port()}",
+                            JsonlLogger(self.td, "svc3"), JsonlLogger(self.td, "sc3"))
+        d._http_ping = lambda: (_ for _ in ()).throw(RuntimeError("ping exploded"))
+        e = d.run_round()
+        self.assertEqual(e["status"], "error")
+        self.assertEqual(len(e["check_items"]), 7)
+        self.assertGreater(d.current_interval, 2)  # backoff after threshold
+        items = {i["item"]: i["status"] for i in e["check_items"]}
+        self.assertEqual(items["index_integrity"], "error")
+        self.assertEqual(items["embedding_health"], "error")
+        self.assertEqual(items["services_alive"], "error")
+        self.assertEqual(items["optimization"], "error")
+
+        # run loop crash guard: a raising round must not kill the thread
+        started = th.Event()
+
+        def exploding_round():
+            started.set()
+            raise RuntimeError("round exploded")
+
+        d.run_round = exploding_round  # type: ignore[method-assign]
+        t = th.Thread(target=d.run, daemon=True)
+        t.start()
+        started.wait(5)
+        time.sleep(0.3)
+        d.request_stop()
+        t.join(timeout=5)
+        self.assertFalse(t.is_alive())
+        entries = JsonlLogger(self.td, "svc3").read_recent(10)
+        self.assertTrue(any(e.get("event") == "selfcheck_crashed" for e in entries),
+                        entries)
+
+    def test_stats_shape(self):
+        from localgate.ingest import IngestProgress
+        from localgate.ocr import OcrEngine
+        from localgate.selfcheck import SelfCheckDaemon
+
+        class _W:
+            error_count = 0
+
+        class _I:
+            progress = IngestProgress()
+            store = IndexStore(os.path.join(self.td, "data"))
+
+            def retry_failed_docs(self, only_doc_ids=None):
+                return {"retried": 0, "fixed": 0, "still_broken": 0, "dropped": 0}
+
+        cfg = make_cfg(self.td)
+        d = SelfCheckDaemon(cfg, _I.store, _I(), LocalHashEmbedder(32),
+                            OcrEngine(mode="off"), _W(),
+                            f"http://127.0.0.1:{free_port()}",
+                            JsonlLogger(self.td, "s"), JsonlLogger(self.td, "c"))
+        stats = d.stats()
+        self.assertFalse(stats["alive"])
+        self.assertEqual(stats["rounds"], 0)
+        self.assertIsNone(stats["last_status"])
+
+
+class TestJsonlLogEdges(TempCase):
+    def test_read_recent_tolerates_corrupt_lines_and_missing_dir(self):
+        lg = JsonlLogger(self.td, "edge", max_bytes=64 * 1024)
+        lg.write({"ok": 1})
+        with open(lg._file_for_today(), "a", encoding="utf-8") as f:
+            f.write("this is not json\n")
+        entries = lg.read_recent(10)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["ok"], 1)
+        missing = JsonlLogger(os.path.join(self.td, "nope"), "x")
+        self.assertEqual(missing.read_recent(5), [])
+
+    def test_oversized_rotation_removes_old_backups(self):
+        lg = JsonlLogger(self.td, "rot", max_bytes=64 * 1024, backups=2)
+        for i in range(1500):
+            lg.write({"i": i, "payload": "y" * 300})
+        names = os.listdir(self.td)
+        backups = [n for n in names if ".log." in n]
+        self.assertTrue(backups)
+        self.assertLessEqual(len(backups), lg.backups)
+
+
+class TestMiniYamlEdges(TempCase):
+    def test_scalar_coercions(self):
+        parsed = _mini_yaml_parse('''
+a: "quoted # not comment"
+b: 'single'
+c:
+d: ~
+e: null
+f: [1, 2, "three, four"]
+g: ""
+''')
+        self.assertEqual(parsed["a"], "quoted # not comment")
+        self.assertEqual(parsed["b"], "single")
+        self.assertIsNone(parsed["c"])
+        self.assertIsNone(parsed["d"])
+        self.assertIsNone(parsed["e"])
+        self.assertEqual(parsed["f"], [1, 2, "three, four"])
+        self.assertEqual(parsed["g"], "")
+
+    def test_inline_list_of_scalars(self):
+        parsed = _mini_yaml_parse("list: [ true, no, 3.5 ]")
+        self.assertEqual(parsed["list"], [True, False, 3.5])
+
+    def test_empty_document_yields_empty_mapping(self):
+        self.assertEqual(_mini_yaml_parse(""), {})
+        self.assertEqual(_mini_yaml_parse("# only a comment\n"), {})
+
+    def test_bad_line_without_colon(self):
+        with self.assertRaises(ConfigError):
+            _mini_yaml_parse("just some words")
+
+    def test_unexpected_indent(self):
+        with self.assertRaises(ConfigError):
+            _mini_yaml_parse("a:\n    b: 1\n      c: 2")
+
+    def test_root_not_mapping(self):
+        with self.assertRaises(ConfigError):
+            _mini_yaml_parse("- just\n- a list")
+
+    def test_none_data_via_pyyaml(self):
+        import types
+        p = os.path.join(self.td, "empty.yaml")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("")  # parses to None under yaml.safe_load
+        fake_yaml = types.SimpleNamespace(safe_load=lambda _t: None)
+        import localgate.config as cfg_mod
+        with mock.patch.dict(sys.modules, {"yaml": fake_yaml}):
+            data, _src = cfg_mod._load_raw(p)
+        self.assertEqual(data, {})
+
+    def test_pyyaml_non_mapping_root(self):
+        import types
+        p = os.path.join(self.td, "list.yaml")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("- a\n- b\n")
+        fake_yaml = types.SimpleNamespace(safe_load=lambda _t: ["a", "b"])
+        import localgate.config as cfg_mod
+        with mock.patch.dict(sys.modules, {"yaml": fake_yaml}):
+            with self.assertRaises(ConfigError):
+                cfg_mod._load_raw(p)
+
+    def test_mini_yaml_fallback_when_pyyaml_missing(self):
+        p = os.path.join(self.td, "mini.yaml")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("server:\n  port: 8123\n")
+        import localgate.config as cfg_mod
+        real_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") \
+            else __builtins__["__import__"]
+
+        def no_yaml(name, *a, **kw):
+            if name == "yaml":
+                raise ImportError("no yaml")
+            return real_import(name, *a, **kw)
+
+        with mock.patch("builtins.__import__", side_effect=no_yaml):
+            data, _src = cfg_mod._load_raw(p)
+        self.assertEqual(data["server"]["port"], 8123)
+
+    def test_config_root_scalar_values_type_errors(self):
+        p = os.path.join(self.td, "t.yaml")
+        write_config(p, {"server": {"read_timeout_s": "fast"}})
+        with self.assertRaises(ConfigError):
+            load_config(p)
+        p2 = os.path.join(self.td, "t2.yaml")
+        write_config(p2, {"search": {"fulltext_weight": "heavy"}})
+        with self.assertRaises(ConfigError):
+            load_config(p2)
+        p3 = os.path.join(self.td, "t3.yaml")
+        write_config(p3, {"paths": {"exclude_names": [1, 2]}})
+        with self.assertRaises(ConfigError):
+            load_config(p3)
