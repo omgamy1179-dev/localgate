@@ -44,7 +44,7 @@ classifiers = [
 # everything else is an optional accelerator or a development tool
 [project.optional-dependencies]
 yaml = ["pyyaml>=6"]
-pdf = ["pypdf>=4"]
+pdf = ["pypdf>=6.19.0"]
 dev = [
   "pytest>=8",
   "pytest-cov>=5",
@@ -54,7 +54,7 @@ dev = [
   "build>=1.2",
   "twine>=5",
   "pyyaml>=6",
-  "pypdf>=4",
+  "pypdf>=6.19.0",
   "mcp>=1",
 ]
 
