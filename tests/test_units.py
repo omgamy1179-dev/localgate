@@ -215,7 +215,8 @@ class TestFsutil(TempCase):
         got = sorted(iter_files([vault], [os.path.join(vault, "secret")], [],
                                 {".md", ".txt"}, 10, protected_dirs=[]))
         names = [os.path.relpath(g, vault) for g in got]
-        self.assertEqual(names, ["keep.md", "sub/keep2.txt"])
+        self.assertEqual(names, [os.path.normpath("keep.md"),
+                                 os.path.normpath("sub/keep2.txt")])
 
     def test_protected_dirs_never_indexed(self):
         vault = os.path.join(self.td, "vault")
@@ -925,7 +926,7 @@ class TestConfigBranches(TempCase):
         write_config(p, {"paths": {"whitelist": "~/Solo"}})
         cfg = load_config(p)
         self.assertEqual(cfg["paths"]["whitelist"],
-                         [os.path.expanduser("~/Solo")])
+                         [os.path.normpath(os.path.expanduser("~/Solo"))])
 
 
 class TestMcpHelpers(unittest.TestCase):

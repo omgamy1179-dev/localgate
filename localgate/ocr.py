@@ -115,6 +115,7 @@ class OcrEngine:
         self._helper_dir = helper_cache_dir
         self._helper_path: str | None = None
         self._helper_lock = threading.Lock()
+        self._probe_started = threading.Event()
         self._tesseract: str | None | bool = None  # lazily probed
         self._vision_broken = False
 
@@ -160,7 +161,25 @@ class OcrEngine:
     # -- public ----------------------------------------------------------
 
     def available(self) -> str | None:
-        """Returns the engine name that would be used, or None."""
+        """Non-blocking engine probe for status endpoints.
+
+        Returns the cached engine once known ("tesseract"/"vision"), or None
+        while the first probe is still running in the background. Detecting
+        the Vision engine may compile a Swift helper (potentially minutes on
+        a cold toolchain) - that must never block an HTTP handler or the
+        self-check loop, so the first probe is asynchronous."""
+        if self.mode == "off":
+            return None
+        with self._helper_lock:
+            if self._tesseract_bin():
+                return "tesseract"
+            if self._vision_broken or self._helper_path:
+                return "vision" if self._helper_path else None
+        self._start_background_probe()
+        return None
+
+    def available_blocking(self) -> str | None:
+        """Full probe; may compile the Vision helper (slow on first run)."""
         if self.mode == "off":
             return None
         if self._tesseract_bin():
@@ -168,6 +187,19 @@ class OcrEngine:
         if self._vision_helper():
             return "vision"
         return None
+
+    def _start_background_probe(self) -> None:
+        if self._probe_started.is_set():
+            return
+        self._probe_started.set()
+        threading.Thread(target=self._background_probe,
+                         name="localgate-ocr-probe", daemon=True).start()
+
+    def _background_probe(self) -> None:
+        try:
+            self.available_blocking()
+        except Exception:
+            pass
 
     def recognize(self, image_path: str) -> tuple[str, str]:
         """Returns (text, engine). Raises OcrUnavailable / OcrError."""

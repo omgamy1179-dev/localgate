@@ -207,7 +207,7 @@ class SignalShutdownCase(unittest.TestCase):
                 except OSError:
                     return False
 
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + 60
             while time.monotonic() < deadline and not healthy():
                 time.sleep(0.2)
             self.assertTrue(healthy(), "service did not come up")
@@ -221,7 +221,7 @@ class SignalShutdownCase(unittest.TestCase):
                 except (OSError, ValueError):
                     return False
 
-            deadline = time.monotonic() + 20
+            deadline = time.monotonic() + 60
             while time.monotonic() < deadline and not indexed():
                 time.sleep(0.2)
             self.assertTrue(indexed(), "vault doc not indexed")

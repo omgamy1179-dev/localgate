@@ -80,8 +80,20 @@ class LocalGateService:
             self.watcher.start()
         if self.cfg["selfcheck"]["enabled"]:
             self.selfcheck.start()
+        # probe the OCR engine outside the request path: on a cold toolchain
+        # the first Vision probe may compile a Swift helper for minutes and
+        # must never block /api/status or the debug panel
+        threading.Thread(target=self._warm_ocr_probe,
+                         name="localgate-ocr-probe", daemon=True).start()
         print(f"[localgate] serving on {self.http.base_url} "
               f"(docs indexed: {len(self.store.docs)})", flush=True)
+
+    def _warm_ocr_probe(self) -> None:
+        try:
+            self.ocr.available_blocking()
+        except Exception as e:
+            self.service_log.write({"timestamp": _now(), "event": "ocr_probe_error",
+                                    "error": f"{type(e).__name__}: {e}"})
 
     def stop(self, join_timeout_s: float = 30.0) -> None:
         if self._stop_once.is_set():

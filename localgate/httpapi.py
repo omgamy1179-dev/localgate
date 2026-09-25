@@ -113,7 +113,14 @@ class ApiServer:
 
             # ---------------- helpers
             def _send_json(self, obj, status: int = 200) -> None:
-                data = json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8")
+                try:
+                    data = json.dumps(obj, ensure_ascii=False, default=str) \
+                        .encode("utf-8")
+                except Exception:
+                    # a serialisation failure must never leave a connection
+                    # closed without any HTTP response
+                    data = b'{"error": "internal server error"}'
+                    status = 500
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("Content-Length", str(len(data)))
