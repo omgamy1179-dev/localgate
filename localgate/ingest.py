@@ -41,6 +41,11 @@ _EXTRACT_BOOT_GRACE_S = 30.0
 _READY = "__ready__"
 
 
+class _ExtractFailure(Exception):
+    """Internal: the worker reported a clean extraction error (its child is
+    still healthy and stays warm)."""
+
+
 def _worker_main(conn) -> None:
     """Extraction worker entry point. Module-level so Windows spawn can pickle
     it by qualified name (closures cannot cross a spawn boundary).
@@ -192,6 +197,14 @@ class _ExtractWorkerPool:
             try:
                 msg = conn.recv()
                 ok, rest = msg[0], msg[1:]
+                if not ok:
+                    raise _ExtractFailure(str(rest[0]) if rest
+                                          else "extraction failed")
+                text, kind2, extra = rest
+            except _ExtractFailure as e:
+                # clean error: the child is healthy and its pipe intact, so
+                # the worker stays warm for the next file
+                raise extract_mod.ExtractError(str(e)) from None
             except (EOFError, OSError):
                 self._discard_worker(kill=True)
                 raise extract_mod.ExtractError(
@@ -200,11 +213,6 @@ class _ExtractWorkerPool:
                 self._discard_worker(kill=True)
                 raise extract_mod.ExtractError(
                     f"extraction worker protocol error: {e}") from e
-            if not ok:
-                self._discard_worker(kill=False)  # healthy worker: keep warm
-                raise extract_mod.ExtractError(str(rest[0]) if rest
-                                               else "extraction failed")
-            text, kind2, extra = rest
             return text, kind2, extra
 
     def close(self) -> None:

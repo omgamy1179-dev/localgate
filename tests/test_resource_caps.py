@@ -34,6 +34,7 @@ from localgate.ingest import (
     Ingestor,
     IngestProgress,
     _ExtractWorkerPool,
+    _worker_main,
     doc_id_for,
 )
 from localgate.ocr import OcrEngine
@@ -592,6 +593,278 @@ class TestConfirmedGone(TempCase):
         self.assertNotIn(doc_id_for(keeper), store.docs)
         self.assertNotIn(doc_id_for(victim), store.docs)
         self.assertTrue(os.path.exists(root_abs))       # read-only boundary
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+# ---------------------------------------------- hermetic pool failure paths
+
+class _ScriptedConn:
+    """Fake pipe connection scripted per test; records every send."""
+
+    def __init__(self, messages=None, send_error=None, recv_error=None,
+                 poll_results=None, close_error=None):
+        self.sent = []
+        self._messages = list(messages or [])
+        self.send_error = send_error
+        self.recv_error = recv_error
+        self.poll_results = list(poll_results or [])
+        self.close_error = close_error
+        self.closed = False
+
+    def send(self, obj):
+        if self.send_error is not None:
+            raise self.send_error
+        self.sent.append(obj)
+
+    def recv(self):
+        if self._messages:
+            return self._messages.pop(0)
+        if self.recv_error is not None:
+            raise self.recv_error
+        raise EOFError("no more scripted messages")
+
+    def poll(self, timeout=None):
+        if self.poll_results:
+            return self.poll_results.pop(0)
+        return bool(self._messages)
+
+    def close(self):
+        if self.close_error is not None:
+            raise self.close_error
+        self.closed = True
+
+
+class _ScriptedProc:
+    def __init__(self, fail_start=False, alive=True):
+        self.fail_start = fail_start
+        self._alive = alive
+        self.terminated = False
+        self.killed = False
+        self.joins = 0
+
+    def start(self):
+        if self.fail_start:
+            raise OSError("spawn refused")
+
+    def is_alive(self):
+        return self._alive
+
+    def terminate(self):
+        self.terminated = True
+        self._alive = False
+
+    def kill(self):
+        self.killed = True
+        self._alive = False
+
+    def join(self, timeout=None):
+        self.joins += 1
+
+
+class _FakeCtx:
+    """Stand-in for multiprocessing.get_context("spawn"): hands out scripted
+    pipes/processes so the parent-side state machine is tested in-process."""
+
+    def __init__(self, procs=None):
+        self.procs = list(procs or [])
+        self.pipes: list[tuple[_ScriptedConn, _ScriptedConn]] = []
+
+    def Pipe(self, duplex=True):
+        if self.pipes:
+            return self.pipes.pop(0)
+        return _ScriptedConn(messages=[(_READY,)]), _ScriptedConn()
+
+    def Process(self, target=None, args=(), name=None, daemon=None):
+        if not self.procs:
+            raise AssertionError("script ran out of fake processes")
+        return self.procs.pop(0)
+
+
+class TestPoolFailurePaths(TempCase):
+    """Parent-side worker-pool state machine, exercised in-process (no spawn)
+    with scripted pipes/processes - every failure branch must fail closed."""
+
+    def _pool(self, procs) -> _ExtractWorkerPool:
+        pool = _ExtractWorkerPool()
+        pool._ctx = _FakeCtx(procs=procs)
+        return pool
+
+    def test_start_failure_fails_closed(self):
+        pool = self._pool([_ScriptedProc(fail_start=True)])
+        with self.assertRaises(ExtractError) as ctx:
+            pool.extract("/x", "text", 5)
+        self.assertIn("failed to start", str(ctx.exception))
+
+    def test_bootstrap_timeout_kills_worker(self):
+        proc = _ScriptedProc()
+        pool = self._pool([proc])
+        pool._ctx.pipes = [(_ScriptedConn(messages=[], poll_results=[False]),
+                            _ScriptedConn())]
+        with self.assertRaises(ExtractError) as ctx:
+            pool.extract("/x", "text", 5)
+        self.assertIn("failed to start", str(ctx.exception))
+        self.assertTrue(proc.terminated)  # timed-out bootstrap is killed
+        self.assertIsNone(pool._proc)
+
+    def test_bootstrap_wrong_message_kills_worker(self):
+        proc = _ScriptedProc()
+        pool = self._pool([proc])
+        pool._ctx.pipes = [(_ScriptedConn(messages=[("hello",)]),
+                            _ScriptedConn())]
+        with self.assertRaises(ExtractError) as ctx:
+            pool.extract("/x", "text", 5)
+        self.assertIn("failed to start", str(ctx.exception))
+        self.assertTrue(proc.terminated)
+
+    def test_send_failure_retries_on_fresh_worker(self):
+        good_proc = _ScriptedProc()
+        pool = self._pool([_ScriptedProc(), good_proc])
+        pool._ctx.pipes = [
+            (_ScriptedConn(messages=[(_READY,)],
+                           send_error=OSError("pipe broke")),
+             _ScriptedConn()),
+            (_ScriptedConn(messages=[(_READY,), (True, "text ok", "text", {})]),
+             _ScriptedConn()),
+        ]
+        text, kind, _extra = pool.extract("/f.md", "text", 30)
+        self.assertEqual((text, kind), ("text ok", "text"))
+        self.assertIs(pool._proc, good_proc)
+
+    def test_send_failure_twice_raises_unavailable(self):
+        pool = self._pool([_ScriptedProc(), _ScriptedProc()])
+        pool._ctx.pipes = [
+            (_ScriptedConn(messages=[(_READY,)],
+                           send_error=OSError("pipe broke")), _ScriptedConn()),
+            (_ScriptedConn(messages=[(_READY,)],
+                           send_error=OSError("pipe broke again")),
+             _ScriptedConn()),
+        ]
+        with self.assertRaises(ExtractError) as ctx:
+            pool.extract("/f.md", "text", 30)
+        self.assertIn("unavailable", str(ctx.exception))
+
+    def test_recv_eof_mid_request_reports_worker_death(self):
+        proc = _ScriptedProc()
+        pool = self._pool([proc])
+        pool._ctx.pipes = [(_ScriptedConn(
+            messages=[(_READY,)], recv_error=EOFError("gone"),
+            poll_results=[True, True]), _ScriptedConn())]
+        with self.assertRaises(ExtractError) as ctx:
+            pool.extract("/f.md", "text", 30)
+        self.assertIn("terminated unexpectedly", str(ctx.exception))
+        self.assertTrue(proc.terminated)
+
+    def test_malformed_ok_payload_is_protocol_error(self):
+        proc = _ScriptedProc()
+        pool = self._pool([proc])
+        pool._ctx.pipes = [(_ScriptedConn(
+            messages=[(_READY,), (True,)],
+            poll_results=[True, True]), _ScriptedConn())]
+        with self.assertRaises(ExtractError) as ctx:
+            pool.extract("/f.md", "text", 30)
+        self.assertIn("protocol error", str(ctx.exception))
+        self.assertTrue(proc.terminated)
+
+    def test_worker_error_keeps_worker_warm(self):
+        proc = _ScriptedProc()
+        pool = self._pool([proc])
+        pool._ctx.pipes = [(_ScriptedConn(
+            messages=[(_READY,), (False, "invalid docx"),
+                      (True, "second try", "text", {})],
+            poll_results=[True, True, True]), _ScriptedConn())]
+        with self.assertRaises(ExtractError) as ctx:
+            pool.extract("/bad.docx", "docx", 30)
+        self.assertIn("invalid docx", str(ctx.exception))
+        # a clean error keeps the SAME warm worker alive
+        self.assertIs(pool._proc, proc)
+        text, _k, _e = pool.extract("/good.md", "text", 30)
+        self.assertEqual(text, "second try")
+
+    def test_discard_survives_hostile_proc_and_conn(self):
+        class HostileProc(_ScriptedProc):
+            def is_alive(self):
+                return True
+
+            def terminate(self):
+                raise OSError("cannot terminate")
+
+            def join(self, timeout=None):
+                raise ValueError("already joined")
+
+        pool = _ExtractWorkerPool()
+        pool._proc = HostileProc()
+        pool._conn = _ScriptedConn(close_error=OSError("close failed"))
+        pool._discard_worker(kill=True)  # must not raise
+        self.assertIsNone(pool._proc)
+        self.assertIsNone(pool._conn)
+
+    def test_close_is_idempotent(self):
+        pool = self._pool([_ScriptedProc()])
+        self.assertTrue(pool._start_worker())
+        pool.close()
+        pool.close()
+        self.assertIsNone(pool._proc)
+
+
+class TestWorkerMainInProcess(TempCase):
+    """Drive the real worker loop with a scripted pipe - no spawn, full
+    protocol coverage (ready, success, oversize, parse failure, shutdown)."""
+
+    def _run_worker(self, script):
+        conn = _ScriptedConn(messages=script)
+        _worker_main(conn)
+        return conn.sent
+
+    def test_ready_then_success_then_shutdown_on_none(self):
+        vault = os.path.join(self.td, "v")
+        os.makedirs(vault)
+        p = write_text(os.path.join(vault, "a.md"), "worker protocol text")
+        sent = self._run_worker([None])
+        self.assertEqual(sent, [(_READY,)])
+        conn = _ScriptedConn(messages=[(p, "text", 10 * 1024 * 1024), None])
+        _worker_main(conn)
+        self.assertEqual(conn.sent[0], (_READY,))
+        ok, text, kind, extra = conn.sent[1]
+        self.assertTrue(ok and kind == "text" and "worker protocol" in text)
+        self.assertEqual(extra, {})
+
+    def test_oversize_request_reports_error(self):
+        p = write_text(os.path.join(self.td, "big.md"), "x" * 1024)
+        conn = _ScriptedConn(messages=[(p, "text", 10), None])
+        _worker_main(conn)
+        ok, msg = conn.sent[1]
+        self.assertFalse(ok)
+        self.assertIn("exceeds max_file_mb cap of 10 bytes", msg)
+
+    def test_parse_failure_reports_error_string(self):
+        bad = write_text(os.path.join(self.td, "bad.docx"), "not a zip")
+        conn = _ScriptedConn(messages=[(bad, "docx", 10 * 1024 * 1024), None])
+        _worker_main(conn)
+        ok, msg = conn.sent[1]
+        self.assertFalse(ok)
+        self.assertTrue(msg)
+
+    def test_recv_eof_ends_worker_silently(self):
+        conn = _ScriptedConn(recv_error=EOFError("parent gone"))
+        _worker_main(conn)
+        self.assertEqual(conn.sent, [(_READY,)])
+
+    def test_send_failure_after_extract_ends_worker(self):
+        p = write_text(os.path.join(self.td, "b.md"), "reply will fail")
+        conn = _ScriptedConn(messages=[(p, "text", 1024 * 1024)])
+        conn.send_error = OSError("pipe dead")
+        _worker_main(conn)  # must return, not raise
+
+    def test_unknown_kind_reports_error(self):
+        p = write_text(os.path.join(self.td, "x.bin"), "binary-ish")
+        conn = _ScriptedConn(messages=[(p, "unknown", 1024), None])
+        _worker_main(conn)
+        ok, msg = conn.sent[1]
+        self.assertFalse(ok)
+        self.assertIn("unsupported file kind", msg)
 
 
 if __name__ == "__main__":
