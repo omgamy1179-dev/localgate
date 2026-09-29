@@ -14,6 +14,8 @@ import os
 import re
 import threading
 
+from .fsutil import confirmed_gone
+
 _WORD_RE = re.compile(r"[A-Za-z0-9_]+")
 
 BM25_K1 = 1.4
@@ -54,6 +56,7 @@ class IndexStore:
         self.docs_path = os.path.join(self.docs_dir, "docs.jsonl")
         self.chunks_path = os.path.join(self.docs_dir, "chunks.jsonl")
         self.bm25_path = os.path.join(self.docs_dir, "bm25.json")
+        self.roots_path = os.path.join(self.docs_dir, "roots.json")
         os.makedirs(self.vec_dir, exist_ok=True)
 
         self.lock = threading.RLock()
@@ -63,6 +66,7 @@ class IndexStore:
         self.chunk_len: dict[str, int] = {}    # chunk_id -> token count
         self.total_len = 0
         self.vectors: dict[str, list[float]] = {}  # chunk_id -> vector (mirror)
+        self.root_identities: dict[str, tuple[int, int]] = {}
         self.load_errors: list[str] = []
         self._load()
 
@@ -100,6 +104,17 @@ class IndexStore:
         load_jsonl(self.chunks_path, self.chunks, "chunk_id")
         # drop chunks whose doc vanished
         self.chunks = {cid: c for cid, c in self.chunks.items() if c.get("doc_id") in self.docs}
+
+        if os.path.exists(self.roots_path):
+            try:
+                with open(self.roots_path, encoding="utf-8") as f:
+                    data = json.load(f)
+                self.root_identities = {
+                    str(k): (int(v[0]), int(v[1])) for k, v in (data or {}).items()
+                    if isinstance(v, (list, tuple)) and len(v) == 2}
+            except (ValueError, OSError, TypeError) as e:
+                self.load_errors.append(f"roots.json: {e}")
+                self.root_identities = {}
 
         if os.path.exists(self.bm25_path):
             try:
@@ -168,6 +183,16 @@ class IndexStore:
             return []
         return [os.path.join(self.vec_dir, n) for n in names]
 
+    def note_root_identities(self, identities: dict[str, tuple[int, int]]) -> None:
+        """Record/refresh whitelist-root volume identity (st_dev, st_ino) as
+        observed at scan time. Deletion confirmation compares these against
+        the directory currently at the root path, so a hollow mount point or
+        recreated root can never purge the entries recorded under the real
+        volume. Old indexes simply have no roots.json (empty map) and fall
+        back to parent-listing confirmation only."""
+        with self.lock:
+            self.root_identities.update(identities)
+
     def save_all(self) -> None:
         with self.lock:
             docs_data = "".join(
@@ -178,6 +203,10 @@ class IndexStore:
                 json.dumps(self.chunks[c], ensure_ascii=False, default=str) + "\n"
                 for c in sorted(self.chunks))
             self._atomic_write(self.chunks_path, chunks_data)
+            roots_data = json.dumps(
+                {k: list(v) for k, v in sorted(self.root_identities.items())},
+                ensure_ascii=False, default=str)
+            self._atomic_write(self.roots_path, roots_data)
             bm25_data = json.dumps(
                 {"postings": self.postings, "chunk_len": self.chunk_len,
                  "total_len": self.total_len},
@@ -360,15 +389,18 @@ class IndexStore:
     def stale_docs_missing_files(self) -> tuple[list[str], list[str]]:
         """Docs whose backing file is confirmed deleted vs unreachable.
 
-        Returns (confirmed, unreachable):
-        - confirmed: parent directory still exists and lists, file is gone ->
-          safe to remove from the index;
-        - unreachable: parent directory missing/not listable (unmounted
-          volume, permission loss) -> treated as UNKNOWN, never removed, so a
-          transient failure cannot mass-clear the index."""
+        Returns (confirmed, unreachable), using the same confirmation
+        semantics as ingest cleanup (fsutil.confirmed_gone):
+        - confirmed: the parent directory still exists and is actually
+          listable, the entry is absent from it (and the whitelist root, if
+          any, still has its index-time identity) -> safe to remove;
+        - unreachable: any permission, I/O or mount uncertainty (unmounted
+          volume, hollow mount point, permission loss) -> treated as UNKNOWN,
+          never removed, so a transient failure cannot mass-clear the index."""
         with self.lock:
             confirmed: list[str] = []
             unreachable: list[str] = []
+            identities = dict(self.root_identities)
             for doc_id, d in self.docs.items():
                 p = d.get("path")
                 if not p:
@@ -376,12 +408,7 @@ class IndexStore:
                     continue
                 if os.path.exists(p):
                     continue
-                parent = os.path.dirname(os.path.abspath(p))
-                try:
-                    parent_ok = os.path.isdir(parent)
-                except OSError:
-                    parent_ok = False
-                if parent_ok:
+                if confirmed_gone(p, identities):
                     confirmed.append(doc_id)
                 else:
                     unreachable.append(doc_id)
