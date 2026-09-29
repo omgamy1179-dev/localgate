@@ -1,10 +1,16 @@
 name: Release
 
-# Builds release artifacts (wheel, sdist, SBOM, SHA-256 sums) and attaches
-# them to a GitHub Release with auto-generated notes. Publishing to PyPI uses
-# OIDC Trusted Publishing and is DOUBLE-GATED: it only runs when an
-# administrator explicitly dispatches this workflow with publish_pypi=true
-# AND the protected `pypi` environment passes. It never runs on tag push.
+# Release pipeline (audit P0-4): a tag push NEVER publishes by itself. Every
+# run first executes the FULL verify pipeline - the same jobs as CI, invoked
+# via workflow_call so there is exactly one source of truth for the quality
+# gates - plus a strict tag/version consistency check. Only after ALL of that
+# succeeds does a separate job attach artifacts to the GitHub Release. A
+# failing gate, an invalid tag or a tag that disagrees with
+# localgate.__version__ can never produce public artifacts.
+#
+# Publishing to PyPI stays DOUBLE-GATED: it only runs when an administrator
+# dispatches this workflow with publish_pypi=true AND the protected `pypi`
+# environment passes (OIDC Trusted Publishing, no long-lived token).
 
 on:
   push:
@@ -20,8 +26,35 @@ permissions:
   contents: read
 
 jobs:
+  check-tag:
+    name: validate release tag
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (the tagged commit is the source of truth)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Enforce strict vMAJOR.MINOR.PATCH == localgate.__version__
+        run: python tools/check_release_tag.py
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+  verify:
+    name: full quality gates (CI pipeline)
+    uses: ./.github/workflows/ci.yml
+
   build-release:
     name: build & attach release artifacts
+    needs: [check-tag, verify]
+    if: >-
+      always() &&
+      needs.verify.result == 'success' &&
+      (needs.check-tag.result == 'success' || needs.check-tag.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write # create/update the GitHub Release
@@ -30,12 +63,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          ref: ${{ github.ref }}
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
       - name: Install build tooling
-        run: python -m pip install build twine
+        run: python -m pip install build twine jsonschema
       - name: Build sdist and wheel (reproducible, timestamps pinned to commit)
         run: |
           export SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
@@ -44,7 +78,12 @@ jobs:
         run: python -m twine check dist/*
       - name: Generate SBOM and SHA-256 checksums
         run: python tools/generate_sbom.py dist
-      - name: Create or update GitHub Release
+      - name: Validate SBOM against the official CycloneDX 1.5 schema
+        run: python tools/validate_sbom.py dist/sbom.cdx.json
+      - name: Verify checksums cover exactly the release attachments
+        run: python tools/generate_sbom.py dist --verify
+      - name: Attach artifacts to the GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}

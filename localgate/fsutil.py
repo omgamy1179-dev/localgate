@@ -39,20 +39,76 @@ def path_in_list(path: str, roots: list[str]) -> bool:
     return any(is_under(path, r) for r in roots or [])
 
 
+def confirmed_gone(path: str,
+                   root_identities: dict[str, tuple[int, int]] | None = None) -> bool:
+    """True only when `path` is verifiably deleted: its parent directory still
+    exists, is ACTUALLY listable by this process, and the listing plus the
+    path itself prove the entry is absent. Any permission, I/O or mount
+    uncertainty is treated as 'unknown' (index entry kept) - never as
+    user-initiated deletion.
+
+    `root_identities` maps whitelist-root paths to the (st_dev, st_ino)
+    recorded when their files were indexed. When the parent is such a root
+    and the directory now has a different identity (volume unmounted and the
+    hollow mount point left behind, root deleted and recreated), deletion is
+    NOT confirmed: an empty swapped-in directory must never purge the entries
+    it can no longer truly account for. Roots without a recorded identity
+    fall back to the listing check alone (compatible with older indexes)."""
+    p = os.path.abspath(path)
+    parent = os.path.dirname(p)
+    name = os.path.basename(p)
+    try:
+        if not os.path.isdir(parent):
+            return False
+        if os.path.lexists(p):  # present, or a (possibly broken) symlink
+            return False
+        if name in os.listdir(parent):  # list fails -> unknown -> keep
+            return False
+        ident = (root_identities or {}).get(parent)
+        if ident is not None:
+            st = os.stat(parent)
+            if (st.st_dev, st.st_ino) != ident:
+                return False
+    except OSError:
+        return False
+    return True
+
+
 def has_indexable_ext(path: str, indexable_exts: set[str]) -> bool:
     ext = os.path.splitext(path)[1].lower()
     return ext in indexable_exts
 
 
+class FileTooLarge(Exception):
+    """A file exceeds the configured max_file_mb index cap.
+
+    Deliberately NOT an OSError: callers must be able to distinguish a
+    diagnosable, retryable over-cap skip from an OS-level read failure."""
+
+
 def fingerprint(path: str, max_mb: int) -> dict:
-    """Content fingerprint used for incremental updates: size + mtime_ns + sha256."""
-    st = os.stat(path)
+    """Content fingerprint used for incremental updates: size + mtime_ns + sha256.
+
+    max_file_mb is enforced here at the final read entry: the byte budget is
+    taken from the OPEN file descriptor (a pre-open stat races with writers),
+    and the read loop aborts if the file grows past the cap mid-hash instead
+    of reading without bound."""
+    limit = max(0, int(max_mb)) * 1024 * 1024
     h = hashlib.sha256()
+    total = 0
     with open(path, "rb") as f:
+        st = os.fstat(f.fileno())
+        if st.st_size > limit:
+            raise FileTooLarge(
+                f"file size {st.st_size} exceeds max_file_mb={max_mb}")
         while True:
             block = f.read(1024 * 1024)
             if not block:
                 break
+            total += len(block)
+            if total > limit:
+                raise FileTooLarge(
+                    f"file grew past max_file_mb={max_mb} while reading")
             h.update(block)
     return {
         "size": st.st_size,

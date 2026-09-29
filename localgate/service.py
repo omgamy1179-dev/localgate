@@ -107,6 +107,7 @@ class LocalGateService:
             for worker in (self.watcher, self.selfcheck):
                 if worker.ident is not None:  # never started -> nothing to join
                     worker.join(timeout=join_timeout_s)
+            self.ingestor.close()  # kill+reap any live extraction worker
             self.store.save_all()
             self.http.stop()
         finally:

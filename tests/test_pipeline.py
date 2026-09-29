@@ -146,34 +146,9 @@ class TestIngestPipeline(TempCase):
         self.assertEqual(snap["errors"], 1)
         self.assertTrue(any("boom" in e for e in snap["recent_errors"]))
 
-    def test_extraction_deadline_fails_file_without_killing_scan(self):
-        """A file whose parser wedges hits the wall-clock deadline: the file is
-        recorded as a parse error and the scan continues with other files."""
-        import time as _time
-
-        from localgate import ingest as ingest_mod
-
-        vault = os.path.join(self.td, "vault")
-        os.makedirs(vault)
-        write_text(os.path.join(vault, "wedged.md"), "this parse never finishes")
-        write_text(os.path.join(vault, "healthy.md"), "healthy after wedge text")
-
-        def wedged_extract(path, kind=None):
-            if "wedged" in path:
-                _time.sleep(5)
-            return "slow text", "text", {}
-
-        ing, store = self._ingestor([vault])
-        with mock.patch.object(ingest_mod, "EXTRACT_DEADLINE_S", 0.2), \
-                mock.patch.object(ingest_mod.extract_mod, "extract",
-                                  side_effect=wedged_extract):
-            summary = ing.scan_whitelist(reason="deadline")
-        self.assertEqual(summary["failed"], 1)
-        self.assertEqual(summary["ingested"], 1)
-        wedged_doc = next(d for d in store.docs.values()
-                          if "wedged" in d.get("path", ""))
-        self.assertEqual(wedged_doc["status"], "parse_error")
-        self.assertIn("deadline", wedged_doc.get("error", ""))
+    # The extraction-deadline scenario (wedged parser killed and isolated,
+    # scan continues) is covered by tests/test_resource_caps.py, which
+    # exercises the process-isolated extraction worker for real.
 
 
 # ------------------------------------------------------------------ ocr

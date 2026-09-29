@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ dynamic = ["version"]
 description = "Privacy-first local retrieval gateway: index your own notes, PDFs, docx, code, chat exports and images on this machine only; serves them over a loopback HTTP API and a native stdio MCP server."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "The LocalGate Authors" }]
 keywords = [
   "local-rag",
@@ -26,7 +27,6 @@ classifiers = [
   "Environment :: Web Environment",
   "Intended Audience :: Developers",
   "Intended Audience :: End Users/Desktop",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: MacOS",
   "Operating System :: Microsoft :: Windows",
   "Operating System :: POSIX :: Linux",
@@ -56,6 +56,7 @@ dev = [
   "pyyaml>=6",
   "pypdf>=6.19.0",
   "mcp>=2.2.0",
+  "jsonschema>=4.21",
 ]
 
 [project.scripts]

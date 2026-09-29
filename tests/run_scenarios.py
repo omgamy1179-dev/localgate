@@ -345,6 +345,11 @@ def s4(ctx):
         time.sleep(1)
     else:
         raise AssertionError(f"deleted file still served 30s: {last_diag}")
+    # the degraded instance watches the same vault: its slower (per-file
+    # process-isolated) watcher must converge too before later scenarios
+    # assert exact document counts against it
+    wait_until(lambda: ctx.status(ctx.svc_degraded)["index"]["docs"] == 8, 90,
+               desc="degraded instance also drops fresh-note")
 
 
 @scenario("S5 自检循环：JSONL 结构完整、七项检测齐全、动作记录")
@@ -536,6 +541,12 @@ def s10(ctx):
     check(emb["status"] in ("warning", "error"), f"embedding health not flagged: {emb}")
     st = ctx.status(svc)
     check(st["selfcheck"]["last_status"] in ("warning", "error"), "overall status")
+    # S4's fresh-note churn is observed by this service too; its slower
+    # (process-isolated) watcher may lag, so converge first. A service that
+    # actually died from the embedding outage would never converge.
+    wait_until(lambda: ctx.status(svc)["index"]["docs"] == 8, 90,
+               desc="degraded instance converged after watcher churn")
+    st = ctx.status(svc)
     check(st["index"]["docs"] == 8, "service died from embedding outage?")
 
 
