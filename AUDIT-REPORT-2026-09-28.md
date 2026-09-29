@@ -5,6 +5,30 @@
 公开仓库：<https://github.com/omgamy1179-dev/localgate>  
 结论：**综合发布就绪度 87/100，未达到 90+ 停止线，也未达到 100 分目标。**
 
+> ## 复审 2026-09-29:**100/100,v1.0.1 已按新门禁发布**
+>
+> 本报告所列全部阻断项与建议项已关闭,逐项证据见
+> [RELEASE-EVIDENCE-2026-09-29.md](RELEASE-EVIDENCE-2026-09-29.md)。要点:
+>
+> - **P0-1/P0-2/P1-1**:解析超时改为可终止的独立子进程;`max_file_mb` 在
+>   fingerprint/ingest/解析 worker 三层以读预算强制;删除确认真正列出父目录
+>   并以持久化根身份抵御空心挂载点(均先有失败测试)。
+> - **P0-3**:SBOM 与声明一致、CycloneDX 1.5 官方 schema 校验通过、合法唯一
+>   UUID serial、checksum 精确覆盖发布附件且可防篡改(--verify)。
+> - **P0-4**:标签发布前置 check-tag(严格 SemVer == `__version__`)→ 完整
+>   CI 门禁(workflow_call)→ SBOM/checksum 验证,全部通过才写公开 Release;
+>   覆盖率门禁 85%→90%。
+> - **P1-1/P1-2/P1-3**:同上表;PEP 639 迁移后构建零弃用警告;行为准则
+>   联系渠道为真实渠道(与安全渠道分离)。
+> - **版本**:变更以 **PR #12**(13 项 checks 全绿)合入 main
+>   (`e54d77e`),以新标签 **v1.0.1** 发布,未复用 1.0.0。
+> - **GitHub 设置**:main 规则集扩展为 12 项必需 checks(全矩阵+覆盖率)+
+>   分支保持最新 + 1 名审核 + 讨论全解决;新建 v* 标签保护规则集;
+>   secret scanning/push protection/private vulnerability reporting/
+>   Dependabot/Discussions/pypi 受保护环境均经 API 实测开启。
+> - **复评得分:100/100**(评分表见证据文件 §7;三项所有者可选项在
+>   证据文件 §8 如实列出,均不构成占位符或未知项)。
+
 ## 1. 执行摘要
 
 LocalGate 的核心功能、隐私边界、跨平台 CI、测试覆盖率、Python 打包和基础社区文件已经形成完整体系。当前代码不是“未完成项目”，而是一个已发布 `v1.0.0`、本地质量门禁整体健康，但仍有若干发布工程和极端输入安全边界需要收口的项目。
