@@ -33,7 +33,8 @@
 ## 3. 本地全量验收(macOS,Python 3.14.6)
 
 ```
-python3 -m pytest tests -p no:cacheprovider   → 239 passed, 1 skipped, 9 subtests passed
+python3 -m pytest tests -p no:cacheprovider   → 243 passed, 1 skipped, 9 subtests passed(CI 实测;
+                                                本地 macOS 同为 243+1;windows 239+5 平台跳过)
 python3 tests/run_scenarios.py                → 19 passed, 0 failed
 合并覆盖率(coverage --parallel-mode + scenarios + combine)
                                               → TOTAL 90.5%(≥90 新门禁)
@@ -100,7 +101,7 @@ Release: https://github.com/omgamy1179-dev/localgate/releases/tag/v1.0.1
 | --- | ---: | ---: | --- |
 | 功能完整性与正确性 | 18/20 | 20/20 | 删除确认改为可证明语义并覆盖全部边界(挂载/权限/换根/多根/根直文件/真实删除) |
 | 隐私、安全与资源边界 | 21/25 | 25/25 | 解析超时真可终止;大小上限在读文件的所有入口强制(含 TOCTOU 预算);只读边界未破坏(S15) |
-| 测试与质量门禁 | 19/20 | 20/20 | 每项缺陷先有失败测试;239 单测 + 19 场景;合并覆盖率门禁提升至 90% 且 CI 实测 90.0% |
+| 测试与质量门禁 | 19/20 | 20/20 | 每项缺陷先有失败测试;每平台 243–244 单测(windows 239,平台跳过)+ 19 场景;合并覆盖率门禁 90% 且 CI 实测 90.0% |
 | 打包与发布工程 | 12/15 | 15/15 | 标签必须通过完整门禁且与版本一致;PEP 639 无弃用警告;1.0.1 全流程实际走通 |
 | 供应链与 GitHub 自动化 | 8/10 | 10/10 | SBOM 与声明一致、schema 合法、serial 合规、checksum 精确+防篡改;必需 checks 扩至全矩阵+覆盖率 |
 | 文档与社区治理 | 9/10 | 10/10 | 占位符清零;行为/安全/支持三渠道分离;CHANGELOG 与实现一致 |
