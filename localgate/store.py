@@ -13,6 +13,7 @@ import math
 import os
 import re
 import threading
+import time
 
 from .fsutil import confirmed_gone
 
@@ -78,7 +79,21 @@ class IndexStore:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        # os.replace can hit a transient sharing violation on Windows (a
+        # scanner holding the freshly-written tmp). Retry briefly, and never
+        # leave the tmp behind.
+        for attempt in range(5):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 4:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
     def _load(self) -> None:
         self.load_errors = []
