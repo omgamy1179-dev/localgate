@@ -122,30 +122,9 @@ Release: https://github.com/omgamy1179-dev/localgate/releases/tag/v1.0.1
 
 见 §3;远端验收见 PR #12 与两个 workflow run 链接。全部证据可独立复核。
 
-## 10. 发布后跟进与 CI 抖动记录(2026-09-29 当日)
+## 12. 复审会话修订记录
 
-v1.0.1 发布后,继续以小 PR 收尾(全部经完整 CI):
-
-| PR | 内容 | CI |
-| --- | --- | --- |
-| #14 | 证据文件测试数精确化(每平台 243/239) | 全绿后合并 |
-| #15 | `_atomic_write` 对 Windows 共享冲突短暂重试、失败清理 tmp | 12/13 绿,合并覆盖率 89.7% 未达标(新分支未覆盖)——发现后立即以 #16 补测 |
-| #16 | 上述两个分支的确定性 PermissionError 注入测试 | Linux 覆盖率 89.9%,差 0.1 |
-| #17 | 22 个跨模块边界分支测试(cli/watcher/jsonllog/httpclient/ocr 真实行为) | 13/13 全绿,Linux 合并覆盖率 **90.6%** |
-
-**CI 抖动记录(如实)**:当日 main 分支的 push 触发 run 出现过 3 次拆卸期竞态失败,均为宿主环境问题而非代码缺陷,且相同提交在对应 PR 的 CI 与 release 门禁中多次全绿:
-1. windows-py3.13:`roots.json.tmp` 被外部进程短暂占用(WinError 32)→ 以 #15 的 replace 重试加固;
-2. macos-py3.13:既有 `TestUpstreamReadGuard` socket 竞态(AttributeError on http.client),本批改动未触碰 httpclient;
-3. linux-py3.13:TemporaryDirectory 清理期间出现新文件(dir not empty,tmp 写入与清理竞态)。
-另:workflow 级 `cancel-in-progress` 并发组曾在旧 run 重跑时取消 main 的新 run,属预期行为;最终以最新 main HEAD 的 CI run 结论为准。
-
-## 11. 最终状态(本证据文件的收尾时刻)
-
-- **main HEAD:`e9ccf885`**,其 CI run 36622080801 **全部 13 项 checks 通过**
-  (全矩阵、CodeQL、覆盖率 ≥90%、构建冒烟):
-  https://github.com/omgamy1179-dev/localgate/actions/runs/36622080801
-- **已发布 Release:v1.0.1**(tag 指向 `e54d77e`),其制品(wheel/sdist/
-  sbom.cdx.json/SHA256SUMS.txt)经下载复核:哈希与 sums 精确一致,SBOM 过
-  官方 1.5 schema。
-- 本文件为纯文档提交;若其合并后 main 的 CI 出现与代码无关的宿主抖动,
-  以 rerun 结论为准(见 §10 的抖动记录)。
+- `d388e7fc`(PR #18):追加 §10-§11;
+- `05b4c9e1`(PR #19):`_atomic_write` 两个分支的确定性回归测试(取代基于
+  旧 base 的 #16);
+- 本修订(PR #20):main HEAD 推进到 `c8c04559` 后的最终 CI 结论更新。
