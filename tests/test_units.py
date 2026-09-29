@@ -1239,3 +1239,41 @@ g: ""
         write_config(p3, {"paths": {"exclude_names": [1, 2]}})
         with self.assertRaises(ConfigError):
             load_config(p3)
+
+
+class TestAtomicWriteResilience(TempCase):
+    """The atomic-write tmp/replace dance must tolerate transient Windows-style
+    sharing violations (retry) and never leave a tmp file behind on permanent
+    failure - both paths kept covered so the 90% gate holds."""
+
+    def test_replace_retries_on_transient_permission_error(self):
+        from localgate.store import IndexStore
+        st = IndexStore(os.path.join(self.td, "data"))
+        real_replace = os.replace
+        calls = {"n": 0}
+
+        def flaky(src, dst):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise PermissionError(13, "sharing violation")
+            return real_replace(src, dst)
+
+        with mock.patch.object(os, "replace", side_effect=flaky), \
+                mock.patch("localgate.store.time.sleep"):
+            st.save_all()
+        self.assertTrue(os.path.exists(st.docs_path))
+        self.assertFalse(os.path.exists(st.docs_path + ".tmp"))
+        self.assertFalse(os.path.exists(st.roots_path + ".tmp"))
+        self.assertGreaterEqual(calls["n"], 5)
+
+    def test_replace_permanent_failure_removes_tmp_and_raises(self):
+        from localgate.store import IndexStore
+        st = IndexStore(os.path.join(self.td, "data"))
+        st.upsert_doc("d1", {"path": "x", "status": "ok"}, ["t"], None)
+        with mock.patch.object(os, "replace",
+                               side_effect=PermissionError(13, "locked")), \
+                mock.patch("localgate.store.time.sleep"):
+            with self.assertRaises(PermissionError):
+                st.save_all()
+        self.assertFalse(os.path.exists(st.docs_path + ".tmp"))
+
