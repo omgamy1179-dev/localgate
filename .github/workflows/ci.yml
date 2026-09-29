@@ -1,10 +1,15 @@
 name: CI
 
+# The single source of truth for LocalGate's quality gates. Runs on every
+# push/PR to main and is REUSED by the release workflow via workflow_call, so
+# a release can never run different (weaker) checks than CI.
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
 
 permissions:
   contents: read
@@ -101,7 +106,7 @@ jobs:
           python tests/run_scenarios.py
           python -m coverage combine
           python -m coverage report
-          python -m coverage report --fail-under=85 --format=total >> $GITHUB_STEP_SUMMARY
+          python -m coverage report --fail-under=90 --format=total >> $GITHUB_STEP_SUMMARY
           python -m coverage xml
       - name: Upload combined coverage report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
