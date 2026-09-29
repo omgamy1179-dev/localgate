@@ -37,7 +37,25 @@ This Code of Conduct applies within all community spaces, and also applies when 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the community leaders responsible for enforcement at [INSERT CONTACT METHOD]. All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be
+reported to the community leaders responsible for enforcement by contacting
+the maintainer directly on GitHub
+([@omgamy1179-dev](https://github.com/omgamy1179-dev)) or, for reports you
+are comfortable making publicly, by opening an issue in the
+[repository issue tracker](https://github.com/omgamy1179-dev/localgate/issues)
+using the `conduct` label. Reports brought to the maintainer directly are
+handled confidentially. If you prefer not to use a public issue, please
+contact [@omgamy1179-dev](https://github.com/omgamy1179-dev) via GitHub and
+mark the message as a conduct report.
+
+**This channel is for conduct reports only.** Security vulnerabilities follow
+the separate private process in [SECURITY.md](SECURITY.md) (GitHub private
+vulnerability reporting) and must not be reported through conduct channels.
+General questions and setup help belong in
+[GitHub Discussions](https://github.com/omgamy1179-dev/localgate/discussions)
+(see [SUPPORT.md](SUPPORT.md)).
+
+All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the reporter of any incident.
 
