@@ -430,14 +430,14 @@ class TestStore(TempCase):
         self._populate(st)
         st.save_all()
         for d in (st.docs_dir, st.vec_dir):
-            os.chmod(d, 0o555)
+            os.chmod(d, 0o500)  # owner read-only; no group/other bits
         try:
             st.upsert_doc("d3", {"path": "x", "status": "ok"}, ["t"], None)
             with self.assertRaises(OSError):
                 st.save_all()
         finally:
             for d in (st.docs_dir, st.vec_dir):
-                os.chmod(d, 0o755)
+                os.chmod(d, 0o700)
         # in-memory state still searchable
         self.assertTrue(st.search_fulltext("pasta"))
 
